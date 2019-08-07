@@ -25,6 +25,7 @@ function mixin(element) {
   element.export = save
   element.collides = collides
   element.move = move
+  element.update = update
 
   return init(element)
 }
@@ -159,6 +160,15 @@ function locate (element, position) {
   }
 }
 
+function update () {
+  if (this.id == 'c1') {
+    console.log('##', this)
+  }
+  locate(this, {
+    x: this.x, y: this.y
+  })
+}
+
 
 /**
  * Helper function to ensure permit edge references to both nodes and node.ids
@@ -207,7 +217,7 @@ module.exports = {
   flatten: require('array-flatten'),
   diff: require('array-difference')
 }
-},{"array-difference":10,"array-flatten":11,"array-unique":12}],3:[function(require,module,exports){
+},{"array-difference":11,"array-flatten":12,"array-unique":13}],3:[function(require,module,exports){
 arguments[4][1][0].apply(exports,arguments)
 },{"./Utils":2,"dup":1}],4:[function(require,module,exports){
 //  Reasons.js by Dave Kinkead
@@ -266,7 +276,7 @@ Graph.prototype.add = function (element) {
     }
 
     //  Edges can connect independent or conjoined reasons.
-    //  If A B & C both already support D
+    //  If A, B & C both already support D
     //  and a new edge is added from A to B or vice versa
     //  then the relationships should be merged [A,B] -> D
     //  and C -> D kept unchanged
@@ -412,10 +422,15 @@ Graph.prototype.last = function () {
 /**
  * Returns an array of all the Graph's edges
  */
- Graph.prototype.edges = function () {
+Graph.prototype.edges = function () {
   return this.filter(el => el.from && el.to)
 }
 
+Graph.prototype.getEdges = function(from, to) {
+  return this.edges().filter(el => {
+    return el.from.includes(from.id) && el.to == to.id
+  })
+}
 
 /**
  * Returns an array of all the Graph's nodes
@@ -514,7 +529,315 @@ Graph.prototype.isToEdge = function (element) {
     return true
   }
 }
-},{"./element":3,"./utils":8}],5:[function(require,module,exports){
+},{"./element":3,"./utils":9}],5:[function(require,module,exports){
+'use strict'
+
+const Layout = {}
+
+Layout.ForceDirected = function(graph, stiffness, repulsion, damping, minEnergyThreshold, maxSpeed) {
+  this.graph = graph;
+  this.stiffness = stiffness; // spring stiffness constant
+  this.repulsion = repulsion; // repulsion constant
+  this.damping = damping; // velocity damping factor
+  this.minEnergyThreshold = minEnergyThreshold || 0.01; //threshold used to determine render stop
+  this.maxSpeed = maxSpeed || Infinity; // nodes aren't allowed to exceed this speed
+
+  this.nodePoints = {}; // keep track of points associated with nodes
+  this.edgeSprings = {}; // keep track of springs associated with edges
+};
+
+Layout.ForceDirected.prototype.point = function(node) {
+  if (!(node.id in this.nodePoints)) {
+    var mass = (node.mass !== undefined) ? node.mass : 100.0;
+    this.nodePoints[node.id] = new Layout.ForceDirected.Point(new Vector(node.x, node.y), mass);
+  }
+
+  return this.nodePoints[node.id];
+};
+
+Layout.ForceDirected.prototype.spring = function(edge) {
+  if (!(edge.id in this.edgeSprings)) {
+    var length = (edge.length !== undefined) ? edge.length : 5.0;
+
+    // var existingSpring = false;
+
+    // var from = this.graph.getEdges(edge.from, edge.to);
+    // from.forEach(function(e) {
+    //   if (existingSpring === false && e.id in this.edgeSprings) {
+    //     existingSpring = this.edgeSprings[e.id];
+    //   }
+    // }, this);
+
+    // if (existingSpring !== false) {
+    //   return new Layout.ForceDirected.Spring(existingSpring.point1, existingSpring.point2, 0.0, 0.0);
+    // }
+
+    // var to = this.graph.getEdges(edge.target, edge.source);
+    // to.forEach(function(e){
+    //   if (existingSpring === false && e.id in this.edgeSprings) {
+    //     existingSpring = this.edgeSprings[e.id];
+    //   }
+    // }, this);
+
+    // if (existingSpring !== false) {
+    //   return new Layout.ForceDirected.Spring(existingSpring.point2, existingSpring.point1, 0.0, 0.0);
+    // }
+
+    const target = this.graph.nodes().find(i => i.id = edge.to)
+    const source = this.graph.nodes().find(i => i.id = edge.from[edge.from.length - 1])
+
+    this.edgeSprings[edge.id] = new Layout.ForceDirected.Spring(
+      this.point(source), this.point(target), length, this.stiffness
+    );
+  }
+
+  return this.edgeSprings[edge.id];
+};
+
+// callback should accept two arguments: Node, Point
+Layout.ForceDirected.prototype.eachNode = function(callback) {
+  var t = this;
+  this.graph.nodes().forEach(function(n){
+    callback.call(t, n, t.point(n));
+  });
+};
+
+// callback should accept two arguments: Edge, Spring
+Layout.ForceDirected.prototype.eachEdge = function(callback) {
+  var t = this;
+  this.graph.edges().forEach(function(e){
+    callback.call(t, e, t.spring(e));
+  });
+};
+
+// callback should accept one argument: Spring
+Layout.ForceDirected.prototype.eachSpring = function(callback) {
+  var t = this;
+  this.graph.edges().forEach(function(e){
+    callback.call(t, t.spring(e));
+  });
+};
+
+
+// Physics stuff
+Layout.ForceDirected.prototype.applyCoulombsLaw = function() {
+  this.eachNode(function(n1, point1) {
+    this.eachNode(function(n2, point2) {
+      if (point1 !== point2)
+      {
+        var d = point1.p.subtract(point2.p);
+        var distance = d.magnitude() + 0.1; // avoid massive forces at small distances (and divide by zero)
+        var direction = d.normalise();
+
+        // apply force to each end point
+        point1.applyForce(direction.multiply(this.repulsion).divide(distance * distance * 0.5));
+        point2.applyForce(direction.multiply(this.repulsion).divide(distance * distance * -0.5));
+      }
+    });
+  });
+};
+
+Layout.ForceDirected.prototype.applyHookesLaw = function() {
+  this.eachSpring(function(spring) {
+    var d = spring.point2.p.subtract(spring.point1.p); // the direction of the spring
+    var displacement = spring.length - d.magnitude();
+    var direction = d.normalise();
+
+    // apply force to each end point
+    spring.point1.applyForce(direction.multiply(spring.k * displacement * -0.5));
+    spring.point2.applyForce(direction.multiply(spring.k * displacement * 0.5));
+  });
+};
+
+Layout.ForceDirected.prototype.attractToCentre = function() {
+  this.eachNode(function(node, point) {
+    var direction = point.p.multiply(-1.0);
+    point.applyForce(direction.multiply(this.repulsion / 50.0));
+  });
+};
+
+
+Layout.ForceDirected.prototype.updateVelocity = function(timestep) {
+  this.eachNode(function(node, point) {
+    // Is this, along with updatePosition below, the only places that your
+    // integration code exist?
+    point.v = point.v.add(point.a.multiply(timestep)).multiply(this.damping);
+    if (point.v.magnitude() > this.maxSpeed) {
+        point.v = point.v.normalise().multiply(this.maxSpeed);
+    }
+    point.a = new Vector(0,0);
+  });
+};
+
+Layout.ForceDirected.prototype.updatePosition = function(timestep) {
+  this.eachNode(function(node, point) {
+    // Same question as above; along with updateVelocity, is this all of
+    // your integration code?
+    if (node.move) {
+      node.move(point.p)
+    }
+    point.p = point.p.add(point.v.multiply(timestep));
+  });
+};
+
+// Calculate the total kinetic energy of the system
+Layout.ForceDirected.prototype.totalEnergy = function(timestep) {
+  var energy = 0.0;
+  this.eachNode(function(node, point) {
+    var speed = point.v.magnitude();
+    energy += 0.5 * point.m * speed * speed;
+  });
+
+  return energy;
+};
+
+/**
+ * Start simulation if it's not running already.
+ * In case it's running then the call is ignored, and none of the callbacks passed is ever executed.
+ */
+Layout.ForceDirected.prototype.start = function(render, onRenderStop, onRenderStart) {
+  var t = this;
+
+  if (this._started) return;
+  this._started = true;
+  this._stop = false;
+
+  if (onRenderStart !== undefined) { onRenderStart(); }
+
+  requestAnimationFrame(function step() {
+    t.tick(0.1);
+
+    if (render !== undefined) {
+      render();
+    }
+
+    // stop simulation when energy of the system goes below a threshold
+    if (t._stop || t.totalEnergy() < t.minEnergyThreshold) {
+      t._started = false;
+      if (onRenderStop !== undefined) { onRenderStop(); }
+    } else {
+      requestAnimationFrame(step);
+    }
+  });
+};
+
+Layout.ForceDirected.prototype.stop = function() {
+  this._stop = true;
+}
+
+Layout.ForceDirected.prototype.tick = function(timestep) {
+  this.applyCoulombsLaw();
+  this.applyHookesLaw();
+  this.attractToCentre();
+  this.updateVelocity(timestep);
+  this.updatePosition(timestep);
+};
+
+// Find the nearest point to a particular position
+Layout.ForceDirected.prototype.nearest = function(pos) {
+  var min = {node: null, point: null, distance: null};
+  var t = this;
+  this.graph.nodes().forEach(function(n){
+    var point = t.point(n);
+    var distance = point.p.subtract(pos).magnitude();
+
+    if (min.distance === null || distance < min.distance) {
+      min = {node: n, point: point, distance: distance};
+    }
+  });
+
+  return min;
+};
+
+// returns [bottomleft, topright]
+Layout.ForceDirected.prototype.getBoundingBox = function() {
+  var bottomleft = new Vector(-20,-20);
+  var topright = new Vector(20,20);
+
+  this.eachNode(function(n, point) {
+    if (point.p.x < bottomleft.x) {
+      bottomleft.x = point.p.x;
+    }
+    if (point.p.y < bottomleft.y) {
+      bottomleft.y = point.p.y;
+    }
+    if (point.p.x > topright.x) {
+      topright.x = point.p.x;
+    }
+    if (point.p.y > topright.y) {
+      topright.y = point.p.y;
+    }
+  });
+
+  var padding = topright.subtract(bottomleft).multiply(0.07); // ~5% padding
+
+  return {bottomleft: bottomleft.subtract(padding), topright: topright.add(padding)};
+};
+
+// Point
+Layout.ForceDirected.Point = function(position, mass) {
+  this.p = position; // position
+  this.m = mass; // mass
+  this.v = new Vector(0, 0); // velocity
+  this.a = new Vector(0, 0); // acceleration
+};
+
+Layout.ForceDirected.Point.prototype.applyForce = function(force) {
+  this.a = this.a.add(force.divide(this.m));
+};
+
+// Spring
+Layout.ForceDirected.Spring = function(point1, point2, length, k) {
+  this.point1 = point1;
+  this.point2 = point2;
+  this.length = length; // spring length at rest
+  this.k = k; // spring constant (See Hooke's law) .. how stiff the spring is
+};
+
+// Vector
+var Vector = function(x, y) {
+  this.x = x;
+  this.y = y;
+};
+
+Vector.random = function() {
+  return new Vector(10.0 * (Math.random() - 0.5), 10.0 * (Math.random() - 0.5));
+};
+
+Vector.prototype.add = function(v2) {
+  return new Vector(this.x + v2.x, this.y + v2.y);
+};
+
+Vector.prototype.subtract = function(v2) {
+  return new Vector(this.x - v2.x, this.y - v2.y);
+};
+
+Vector.prototype.multiply = function(n) {
+  return new Vector(this.x * n, this.y * n);
+};
+
+Vector.prototype.divide = function(n) {
+  return new Vector((this.x / n) || 0, (this.y / n) || 0); // Avoid divide by zero errors..
+};
+
+Vector.prototype.magnitude = function() {
+  return Math.sqrt(this.x*this.x + this.y*this.y);
+};
+
+Vector.prototype.normal = function() {
+  return new Vector(-this.y, this.x);
+};
+
+Vector.prototype.normalise = function() {
+  return this.divide(this.magnitude());
+};
+
+module.exports = {
+  Layout,
+  Vector
+}
+
+},{}],6:[function(require,module,exports){
 //  Reasons.js by Dave Kinkead
 //  Copyright 2017-2019 University of Queensland
 //  Available under the MIT license
@@ -572,7 +895,7 @@ Mapper.prototype.render = function (elements) {
 Mapper.prototype.export = function () {
   return this.graph.map(element => element.export())
 }
-},{"./graph":4,"./ui":7,"./view":9}],6:[function(require,module,exports){
+},{"./graph":4,"./ui":8,"./view":10}],7:[function(require,module,exports){
 //  Reasons.js by Dave Kinkead
 //  Copyright 2017-2019 University of Queensland
 //  Available under the MIT license
@@ -587,7 +910,7 @@ module.exports = {
     return new Mapper(dom)
   }
 }
-},{"./mapper":5}],7:[function(require,module,exports){
+},{"./mapper":6}],8:[function(require,module,exports){
 //  Reasons.js by Dave Kinkead
 //  Copyright 2017-2019 University of Queensland
 //  Available under the MIT license
@@ -1143,9 +1466,9 @@ function isMetaKey (event) {
     Keycode.isEventKey(event, 'ControlRight')
   ) ? true : false
 }
-},{"./graph":4,"./utils":8,"./view":9,"hammerjs":13,"keycode":14}],8:[function(require,module,exports){
+},{"./graph":4,"./utils":9,"./view":10,"hammerjs":14,"keycode":15}],9:[function(require,module,exports){
 arguments[4][2][0].apply(exports,arguments)
-},{"array-difference":10,"array-flatten":11,"array-unique":12,"dup":2}],9:[function(require,module,exports){
+},{"array-difference":11,"array-flatten":12,"array-unique":13,"dup":2}],10:[function(require,module,exports){
 //  Reasons.js by Dave Kinkead
 //  Copyright 2017-2019 University of Queensland
 //  Available under the MIT license
@@ -1154,6 +1477,7 @@ arguments[4][2][0].apply(exports,arguments)
 
 const Element = require('./Element')
 const Utils = require('./utils')
+const { Layout, Vector } = require('./layout')
 
 //  Display Settings
 const maxWidth     = 200
@@ -1202,6 +1526,10 @@ module.exports = (function () {
     mapper.DOM.style['min-width'] = "100px";
     mapper.DOM.appendChild(canvas)
 
+    window.forceLayout = () => {
+      forceLayout(mapper)
+    }
+
     resize(mapper)
   }
 
@@ -1247,6 +1575,68 @@ module.exports = (function () {
     })
   }
 
+  function forceLayout(mapper) {
+    const layout = new Layout.ForceDirected(
+      mapper.graph,
+      300.0, // Spring stiffness
+      800.0, // Node repulsion
+      0.01, // Damping
+      1 // minEnergyThreshold
+    )
+
+    // calculate bounding box of graph layout.. with ease-in
+    var currentBB = layout.getBoundingBox();
+    var targetBB = {bottomleft: new Vector(-2, -2), topright: new Vector(2, 2)};
+
+    // auto adjusting bounding box
+    requestAnimationFrame(function adjust() {
+      targetBB = layout.getBoundingBox();
+      // current gets 20% closer to target every iteration
+      currentBB = {
+        bottomleft: currentBB.bottomleft.add( targetBB.bottomleft.subtract(currentBB.bottomleft)
+          .divide(10)),
+        topright: currentBB.topright.add( targetBB.topright.subtract(currentBB.topright)
+          .divide(10))
+      };
+
+      requestAnimationFrame(adjust);
+    });
+
+    const canvas = mapper.DOM.querySelector('canvas')
+    const toScreen = function(p) {
+      var size = currentBB.topright.subtract(currentBB.bottomleft);
+      var sx = p.subtract(currentBB.bottomleft).divide(size.x).x * canvas.width;
+      var sy = p.subtract(currentBB.bottomleft).divide(size.y).y * canvas.height;
+      return new Vector(sx, sy);
+    };
+
+    layout.updatePosition = function(timestep) {
+      this.eachNode(function(node, point) {
+        // Same question as above; along with updateVelocity, is this all of
+        // your integration code?
+        if (node.move) {
+          node.move(toScreen(point.p))
+        }
+        point.p = point.p.add(point.v.multiply(timestep));
+      });
+    }
+
+    layout.start(
+      () => {
+        // console.log('animated', layout.graph)
+        zero(mapper)
+        draw(mapper)
+      },
+      () => {
+        console.log('setled', layout.graph)
+        zero(mapper)
+        draw(mapper)
+      }
+    )
+
+    return layout
+  }
+
   function resize (mapper) {
     mapper.DOM.width = (mapper.DOM.clientWidth - mapper.DOM.clientLeft)
     mapper.DOM.height = (mapper.DOM.clientHeight - mapper.DOM.clientTop)
@@ -1276,6 +1666,7 @@ module.exports = (function () {
     zero,
     setScale,
     resize,
+    forceLayout
   }
 })()
 
@@ -1341,6 +1732,7 @@ function draw_node (node, {context, offset}) {
  * Private: Draws an edge on the canvas
  */
 function draw_edge (edge, {context, offset}) {
+  if (!edge) { return }
   locate(edge)
   const ox = offset.x
   const oy = offset.y
@@ -1426,7 +1818,7 @@ function locate (edge) {
   })
 
   //  move the 'to' point back down the path to just outside the node.
-  let to = elements.find(e => e.id == edge.to)
+  let to = elements.find(e => e && e.id == edge.to)
   let offset = pointOfIntersection(edge.center, to, 5)
 
   // get offset x,y from rectangle intersect
@@ -1490,7 +1882,7 @@ function pointOfIntersection (from, rect, buffer) {
 
   return {x: distance * Math.cos(angle), y: distance * Math.sin(angle)}
 }
-},{"./Element":1,"./utils":8}],10:[function(require,module,exports){
+},{"./Element":1,"./layout":5,"./utils":9}],11:[function(require,module,exports){
 (function(global) {
 
 	var indexOf = Array.prototype.indexOf || function(elem) {
@@ -1538,7 +1930,7 @@ function pointOfIntersection (from, rect, buffer) {
 
 }(this));
 
-},{}],11:[function(require,module,exports){
+},{}],12:[function(require,module,exports){
 'use strict'
 
 /**
@@ -1648,7 +2040,7 @@ function flattenDownDepth (array, result, depth) {
   return result
 }
 
-},{}],12:[function(require,module,exports){
+},{}],13:[function(require,module,exports){
 /*!
  * array-unique <https://github.com/jonschlinkert/array-unique>
  *
@@ -1693,7 +2085,7 @@ module.exports.immutable = function uniqueImmutable(arr) {
   return module.exports(newArr);
 };
 
-},{}],13:[function(require,module,exports){
+},{}],14:[function(require,module,exports){
 /*! Hammer.JS - v2.0.7 - 2016-04-22
  * http://hammerjs.github.io/
  *
@@ -4338,7 +4730,7 @@ if (typeof define === 'function' && define.amd) {
 
 })(window, document, 'Hammer');
 
-},{}],14:[function(require,module,exports){
+},{}],15:[function(require,module,exports){
 // Source: http://jsfiddle.net/vWx8V/
 // http://stackoverflow.com/questions/5603195/full-list-of-javascript-keycodes
 
@@ -4515,5 +4907,5 @@ for (var alias in aliases) {
   codes[alias] = aliases[alias]
 }
 
-},{}]},{},[6])(6)
+},{}]},{},[7])(7)
 });

@@ -82,7 +82,7 @@ Then:
 
     $ npm test
 
-To get autobuilding to work, install [workman](https://facebook.github.io/watchman/)
+To get autobuilding to work, install [watchman](https://facebook.github.io/watchman/)
 
     $ watchman-make --make "npm run" -p "lib/*.js" -t build
 
